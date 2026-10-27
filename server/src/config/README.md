@@ -1,0 +1,1 @@
+The API requires a MongoDB deployment and a `JWT_ACCESS_SECRET` with at least 32 characters. Use the root README for environment setup, replica-set guidance, seed, and deployment steps. Keep all secrets in the deployment provider's secret manager.

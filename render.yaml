@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: imovies-api
+    runtime: docker
+    rootDir: server
+    plan: starter
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: MONGODB_URI
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: PAYMENT_MODE
+        value: demo
