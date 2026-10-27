@@ -17,9 +17,10 @@ export function createApp() {
     next();
   });
   app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-  const origins = (process.env.CLIENT_URL || "http://localhost:5173")
-    .split(",")
-    .map((s) => s.trim());
+  const origins = [
+    "https://i-movies-blush.vercel.app",
+    "http://localhost:5173",
+  ];
   app.use(
     cors({
       origin: origins,
@@ -29,7 +30,6 @@ export function createApp() {
     }),
   );
 
-  app.options("*", cors());
   app.use(
     "/api/v1/payments/webhook",
     express.raw({ type: "application/json", limit: "1mb" }),
