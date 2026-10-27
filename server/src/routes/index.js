@@ -132,12 +132,10 @@ router.post(
   }),
 );
 router.post("/auth/reset-password", (_req, res) =>
-  res
-    .status(501)
-    .json({
-      message:
-        "Password reset token delivery is not enabled. Configure a verified email provider before enabling this endpoint.",
-    }),
+  res.status(501).json({
+    message:
+      "Password reset token delivery is not enabled. Configure a verified email provider before enabling this endpoint.",
+  }),
 );
 router.get(
   "/movies",
@@ -361,15 +359,13 @@ router.post(
       .get("io")
       ?.to(`show:${req.params.id}`)
       .emit("seats:changed", { showId: req.params.id });
-    res
-      .status(201)
-      .json({
-        hold: {
-          _id: hold._id,
-          seatIds: hold.seatIds,
-          expiresAt: hold.expiresAt,
-        },
-      });
+    res.status(201).json({
+      hold: {
+        _id: hold._id,
+        seatIds: hold.seatIds,
+        expiresAt: hold.expiresAt,
+      },
+    });
   }),
 );
 router.delete(
@@ -402,7 +398,12 @@ router.post(
       }),
       req.body,
     );
-    const booking = await createBooking({ userId: req.user._id, ...b });
+    const booking = await createBooking({
+      userId: req.user._id,
+      showId: b.showId,
+      holdId: b.holdId,
+      seatIds: b.seats,
+    });
     res.status(201).json({ booking });
   }),
 );
@@ -564,56 +565,202 @@ router.post(
       }),
       req.body,
     );
+
+    // Keep demo payment behavior for local development.
     if (b.provider === "demo") {
-      if (process.env.PAYMENT_MODE === "razorpay")
-        return res.status(400).json({ message: "Demo payments are disabled" });
+      if (process.env.PAYMENT_MODE === "razorpay") {
+        return res.status(400).json({
+          message: "Demo payments are disabled",
+        });
+      }
+
       const booking = await confirmDemoPayment({
         bookingId: b.bookingId,
         userId: req.user._id,
         success: b.success !== false,
         orderId: b.orderId,
       });
+
       req.app
         .get("io")
         ?.to(`show:${booking.show}`)
-        .emit("seats:changed", { showId: String(booking.show) });
+        .emit("seats:changed", {
+          showId: String(booking.show),
+        });
+
       return res.json({ booking });
     }
+
+    // Ensure the required payment information is present.
     if (
       !b.razorpay_order_id ||
       !b.razorpay_payment_id ||
       !b.razorpay_signature ||
+      !process.env.RAZORPAY_KEY_ID ||
       !process.env.RAZORPAY_KEY_SECRET
-    )
-      return res
-        .status(400)
-        .json({ message: "Missing payment verification fields" });
+    ) {
+      return res.status(400).json({
+        message: "Missing payment verification fields",
+      });
+    }
+
+    // Verify the signature using the Razorpay secret.
     const expected = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(`${b.razorpay_order_id}|${b.razorpay_payment_id}`)
       .digest("hex");
+
+    const received = b.razorpay_signature;
+
     if (
+      expected.length !== received.length ||
       !crypto.timingSafeEqual(
-        Buffer.from(expected),
-        Buffer.from(b.razorpay_signature),
+        Buffer.from(expected, "hex"),
+        Buffer.from(received, "hex"),
       )
-    )
-      return res
-        .status(400)
-        .json({ message: "Payment signature verification failed" });
+    ) {
+      return res.status(400).json({
+        message: "Payment signature verification failed",
+      });
+    }
+
+    // Find the payment order created for this user and booking.
     const payment = await Payment.findOne({
       provider: "razorpay",
       providerOrderId: b.razorpay_order_id,
       user: req.user._id,
+      booking: b.bookingId,
     });
-    if (!payment || String(payment.booking) !== b.bookingId)
-      return res.status(404).json({ message: "Payment order not found" });
-    return res
-      .status(501)
-      .json({
-        message:
-          "Signature validated, but capture reconciliation must be enabled before confirming real payments. No ticket was issued.",
+
+    if (!payment) {
+      return res.status(404).json({
+        message: "Payment order not found",
       });
+    }
+
+    // Retrieve the booking.
+    const booking = await Booking.findOne({
+      _id: b.bookingId,
+      user: req.user._id,
+    });
+
+    if (!booking) {
+      return res.status(404).json({
+        message: "Booking not found",
+      });
+    }
+
+    // Idempotency: don't confirm the same booking twice.
+    if (
+      booking.status === "confirmed" &&
+      payment.status === "captured" &&
+      payment.providerPaymentId === b.razorpay_payment_id
+    ) {
+      return res.json({ booking });
+    }
+
+    if (booking.status !== "pending" && booking.status !== "payment_pending") {
+      return res.status(409).json({
+        message: "Booking is not payable",
+      });
+    }
+
+    // Ask Razorpay for the actual payment status.
+    const razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+
+    const rpPayment = await razorpay.payments.fetch(b.razorpay_payment_id);
+
+    // Confirm that the fetched payment belongs to this order.
+    if (rpPayment.order_id !== b.razorpay_order_id) {
+      return res.status(400).json({
+        message: "Payment order does not match",
+      });
+    }
+
+    // Confirm the amount and currency match the booking.
+    if (
+      rpPayment.amount !== Math.round(booking.totalAmount * 100) ||
+      rpPayment.currency !== booking.currency
+    ) {
+      return res.status(400).json({
+        message: "Payment amount or currency does not match booking",
+      });
+    }
+
+    // Don't issue a ticket for authorized or failed payments.
+    if (rpPayment.status !== "captured") {
+      return res.status(409).json({
+        message: `Payment is not captured. Current status: ${rpPayment.status}`,
+      });
+    }
+
+    // Check that the seat hold is still valid.
+    const hold = await SeatHold.findOne({
+      _id: booking.hold,
+      user: req.user._id,
+      status: "active",
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!hold) {
+      return res.status(409).json({
+        message:
+          "Seat hold expired. Payment may have succeeded; contact support for recovery.",
+      });
+    }
+
+    // Ensure these seats have not already been confirmed by another booking.
+    const conflicting = await Booking.findOne({
+      _id: { $ne: booking._id },
+      show: booking.show,
+      status: "confirmed",
+      seatIds: { $in: booking.seatIds },
+    });
+
+    if (conflicting) {
+      return res.status(409).json({
+        message:
+          "Seat conflict detected. Payment may have succeeded; contact support for recovery.",
+      });
+    }
+
+    // Update the existing payment record.
+    payment.providerPaymentId = b.razorpay_payment_id;
+    payment.status = "captured";
+    payment.verifiedAt = new Date();
+    await payment.save();
+
+    // Confirm the booking and generate its ticket token.
+    booking.status = "confirmed";
+    booking.paymentStatus = "paid";
+    booking.ticketToken =
+      booking.ticketToken || crypto.randomBytes(24).toString("hex");
+
+    booking.audit.push({
+      state: "confirmed",
+      at: new Date(),
+      by: "system",
+      note: "Razorpay payment verified and captured",
+    });
+
+    await booking.save();
+
+    // Mark the seat hold as confirmed.
+    hold.status = "confirmed";
+    await hold.save();
+
+    // Notify clients viewing the same show.
+    req.app
+      .get("io")
+      ?.to(`show:${booking.show}`)
+      .emit("seats:changed", {
+        showId: String(booking.show),
+      });
+
+    return res.json({ booking });
   }),
 );
 router.get("/users/me", requireAuth, (req, res) =>
@@ -805,9 +952,7 @@ router.post(
     }
 
     const startTime = new Date(b.startTime);
-    const endTime = new Date(
-      startTime.getTime() + movie.duration * 60 * 1000,
-    );
+    const endTime = new Date(startTime.getTime() + movie.duration * 60 * 1000);
 
     if (startTime <= new Date()) {
       return res.status(400).json({
@@ -910,12 +1055,10 @@ router.get(
       "reference movieTitle theaterName seatLabels showSnapshot status",
     );
     if (!booking)
-      return res
-        .status(404)
-        .json({
-          valid: false,
-          message: "Ticket is invalid or no longer active",
-        });
+      return res.status(404).json({
+        valid: false,
+        message: "Ticket is invalid or no longer active",
+      });
     res.json({
       valid: true,
       ticket: {

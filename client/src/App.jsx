@@ -1097,24 +1097,92 @@ function Checkout() {
   }, [bookingId]);
   const pay = async () => {
     setBusy(true);
+
     try {
+      // Ask our backend to create a Razorpay order
       const r = await api.post("/payments/orders", { bookingId });
-      if (r.data.mode === "demo") {
-        const v = await api.post("/payments/verify", {
-          bookingId,
-          orderId: r.data.order.id,
-          provider: "demo",
-          success: true,
-        });
-        if (v.data.booking) nav(`/booking/success/${bookingId}`);
-        else toast.error("Payment could not be confirmed");
-      } else {
-        toast(
-          "Razorpay checkout adapter needs to be configured in this deployment.",
-        );
+
+      if (r.data.mode !== "razorpay") {
+        toast.error("Razorpay is not enabled on the backend.");
+        return;
       }
+
+      // Load Razorpay Checkout script
+      const loadRazorpay = () =>
+        new Promise((resolve) => {
+          if (window.Razorpay) {
+            resolve(true);
+            return;
+          }
+
+          const script = document.createElement("script");
+          script.src = "https://checkout.razorpay.com/v1/checkout.js";
+          script.onload = () => resolve(true);
+          script.onerror = () => resolve(false);
+          document.body.appendChild(script);
+        });
+
+      const loaded = await loadRazorpay();
+
+      if (!loaded) {
+        toast.error("Could not load Razorpay. Please try again.");
+        return;
+      }
+
+      const options = {
+        key: r.data.keyId,
+        amount: r.data.order.amount,
+        currency: r.data.order.currency,
+        name: "iMovies",
+        description: "Movie ticket booking",
+        order_id: r.data.order.id,
+
+        handler: async function (response) {
+          try {
+            // Verify the payment with our backend
+            const v = await api.post("/payments/verify", {
+              bookingId,
+              provider: "razorpay",
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            });
+
+            if (v.data.booking) {
+              toast.success("Payment successful!");
+              nav(`/booking/success/${bookingId}`);
+            } else {
+              toast.error("Payment verification failed.");
+            }
+          } catch (e) {
+            toast.error(
+              e.response?.data?.message || "Payment verification failed.",
+            );
+          }
+        },
+
+        modal: {
+          ondismiss: function () {
+            toast("Payment cancelled.");
+          },
+        },
+
+        theme: {
+          color: "#e11d48",
+        },
+      };
+
+      const razorpay = new window.Razorpay(options);
+
+      razorpay.on("payment.failed", function () {
+        toast.error("Payment failed. Please try again.");
+      });
+
+      razorpay.open();
     } catch (e) {
-      toast.error(e.message);
+      toast.error(
+        e.response?.data?.message || e.message || "Could not start payment.",
+      );
     } finally {
       setBusy(false);
     }
@@ -1518,50 +1586,264 @@ function Admin() {
       <div className="admin-forms">
         <section className="admin-form-card">
           <div className="admin-form-heading">
-            <div><span className="eyebrow">LOCATION</span><h2>Add a theatre</h2></div>
+            <div>
+              <span className="eyebrow">LOCATION</span>
+              <h2>Add a theatre</h2>
+            </div>
             <span className="admin-form-step">01</span>
           </div>
-          <p className="admin-form-description">Add a cinema location before setting up its screens.</p>
+          <p className="admin-form-description">
+            Add a cinema location before setting up its screens.
+          </p>
           <form onSubmit={submitTheater} className="admin-form-grid">
-            <label className="admin-field admin-field-wide">Theatre name<input required placeholder="e.g. PVR City Centre" value={theaterForm.name} onChange={(e) => setTheaterForm({ ...theaterForm, name: e.target.value })} /></label>
-            <label className="admin-field admin-field-wide">Street address<input required placeholder="Street, building, area" value={theaterForm.address} onChange={(e) => setTheaterForm({ ...theaterForm, address: e.target.value })} /></label>
-            <label className="admin-field">City<input required placeholder="City" value={theaterForm.city} onChange={(e) => setTheaterForm({ ...theaterForm, city: e.target.value })} /></label>
-            <label className="admin-field">State<input placeholder="State" value={theaterForm.state} onChange={(e) => setTheaterForm({ ...theaterForm, state: e.target.value })} /></label>
-            <label className="admin-field">Postal code<input placeholder="Postal code" value={theaterForm.postalCode} onChange={(e) => setTheaterForm({ ...theaterForm, postalCode: e.target.value })} /></label>
-            <label className="admin-field">Contact number<input type="tel" placeholder="Phone number" value={theaterForm.contact} onChange={(e) => setTheaterForm({ ...theaterForm, contact: e.target.value })} /></label>
-            <div className="admin-form-actions"><button className="btn btn-primary">Create theatre <ArrowRight size={15} /></button></div>
+            <label className="admin-field admin-field-wide">
+              Theatre name
+              <input
+                required
+                placeholder="e.g. PVR City Centre"
+                value={theaterForm.name}
+                onChange={(e) =>
+                  setTheaterForm({ ...theaterForm, name: e.target.value })
+                }
+              />
+            </label>
+            <label className="admin-field admin-field-wide">
+              Street address
+              <input
+                required
+                placeholder="Street, building, area"
+                value={theaterForm.address}
+                onChange={(e) =>
+                  setTheaterForm({ ...theaterForm, address: e.target.value })
+                }
+              />
+            </label>
+            <label className="admin-field">
+              City
+              <input
+                required
+                placeholder="City"
+                value={theaterForm.city}
+                onChange={(e) =>
+                  setTheaterForm({ ...theaterForm, city: e.target.value })
+                }
+              />
+            </label>
+            <label className="admin-field">
+              State
+              <input
+                placeholder="State"
+                value={theaterForm.state}
+                onChange={(e) =>
+                  setTheaterForm({ ...theaterForm, state: e.target.value })
+                }
+              />
+            </label>
+            <label className="admin-field">
+              Postal code
+              <input
+                placeholder="Postal code"
+                value={theaterForm.postalCode}
+                onChange={(e) =>
+                  setTheaterForm({ ...theaterForm, postalCode: e.target.value })
+                }
+              />
+            </label>
+            <label className="admin-field">
+              Contact number
+              <input
+                type="tel"
+                placeholder="Phone number"
+                value={theaterForm.contact}
+                onChange={(e) =>
+                  setTheaterForm({ ...theaterForm, contact: e.target.value })
+                }
+              />
+            </label>
+            <div className="admin-form-actions">
+              <button className="btn btn-primary">
+                Create theatre <ArrowRight size={15} />
+              </button>
+            </div>
           </form>
         </section>
 
         <section className="admin-form-card">
           <div className="admin-form-heading">
-            <div><span className="eyebrow">AUDITORIUM</span><h2>Add a screen</h2></div>
+            <div>
+              <span className="eyebrow">AUDITORIUM</span>
+              <h2>Add a screen</h2>
+            </div>
             <span className="admin-form-step">02</span>
           </div>
-          <p className="admin-form-description">Choose a theatre and define the seating layout for its screen.</p>
+          <p className="admin-form-description">
+            Choose a theatre and define the seating layout for its screen.
+          </p>
           <form onSubmit={submitScreen} className="admin-form-grid">
-            <label className="admin-field admin-field-wide">Theatre<select required value={screenForm.theater} onChange={(e) => setScreenForm({ ...screenForm, theater: e.target.value })}><option value="">Select a theatre</option>{theaters.map((t) => <option key={t._id} value={t._id}>{t.name} — {t.city}</option>)}</select></label>
-            <label className="admin-field admin-field-wide">Screen name<input required placeholder="e.g. Screen 1" value={screenForm.name} onChange={(e) => setScreenForm({ ...screenForm, name: e.target.value })} /></label>
-            <label className="admin-field">Rows<input type="number" min="1" max="26" value={screenForm.rows} onChange={(e) => setScreenForm({ ...screenForm, rows: e.target.value })} /></label>
-            <label className="admin-field">Seats per row<input type="number" min="1" max="40" value={screenForm.seatsPerRow} onChange={(e) => setScreenForm({ ...screenForm, seatsPerRow: e.target.value })} /></label>
-            <div className="admin-form-actions"><button className="btn btn-primary" disabled={!theaters.length}>Create screen <ArrowRight size={15} /></button></div>
+            <label className="admin-field admin-field-wide">
+              Theatre
+              <select
+                required
+                value={screenForm.theater}
+                onChange={(e) =>
+                  setScreenForm({ ...screenForm, theater: e.target.value })
+                }
+              >
+                <option value="">Select a theatre</option>
+                {theaters.map((t) => (
+                  <option key={t._id} value={t._id}>
+                    {t.name} — {t.city}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="admin-field admin-field-wide">
+              Screen name
+              <input
+                required
+                placeholder="e.g. Screen 1"
+                value={screenForm.name}
+                onChange={(e) =>
+                  setScreenForm({ ...screenForm, name: e.target.value })
+                }
+              />
+            </label>
+            <label className="admin-field">
+              Rows
+              <input
+                type="number"
+                min="1"
+                max="26"
+                value={screenForm.rows}
+                onChange={(e) =>
+                  setScreenForm({ ...screenForm, rows: e.target.value })
+                }
+              />
+            </label>
+            <label className="admin-field">
+              Seats per row
+              <input
+                type="number"
+                min="1"
+                max="40"
+                value={screenForm.seatsPerRow}
+                onChange={(e) =>
+                  setScreenForm({ ...screenForm, seatsPerRow: e.target.value })
+                }
+              />
+            </label>
+            <div className="admin-form-actions">
+              <button className="btn btn-primary" disabled={!theaters.length}>
+                Create screen <ArrowRight size={15} />
+              </button>
+            </div>
           </form>
         </section>
 
         <section className="admin-form-card admin-form-card-wide">
           <div className="admin-form-heading">
-            <div><span className="eyebrow">SCHEDULE</span><h2>Create a show</h2></div>
+            <div>
+              <span className="eyebrow">SCHEDULE</span>
+              <h2>Create a show</h2>
+            </div>
             <span className="admin-form-step">03</span>
           </div>
-          <p className="admin-form-description">Schedule a movie screening and set its language, format, and starting price.</p>
-          <form onSubmit={submitShow} className="admin-form-grid admin-show-grid">
-            <label className="admin-field">Movie<select required value={showForm.movie} onChange={(e) => setShowForm({ ...showForm, movie: e.target.value })}><option value="">Select a movie</option>{movies.map((m) => <option key={m._id} value={m._id}>{m.title}</option>)}</select></label>
-            <label className="admin-field">Screen<select required value={showForm.screen} onChange={(e) => setShowForm({ ...showForm, screen: e.target.value })}><option value="">Select a screen</option>{screens.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}</select></label>
-            <label className="admin-field">Start date and time<input type="datetime-local" required value={showForm.startTime} onChange={(e) => setShowForm({ ...showForm, startTime: e.target.value })} /></label>
-            <label className="admin-field">Language<input placeholder="e.g. Hindi" value={showForm.language} onChange={(e) => setShowForm({ ...showForm, language: e.target.value })} /></label>
-            <label className="admin-field">Format<select value={showForm.format} onChange={(e) => setShowForm({ ...showForm, format: e.target.value })}><option value="2D">2D</option><option value="3D">3D</option><option value="IMAX">IMAX</option></select></label>
-            <label className="admin-field">Base ticket price (₹)<input type="number" min="1" required value={showForm.basePrice} onChange={(e) => setShowForm({ ...showForm, basePrice: e.target.value })} /></label>
-            <div className="admin-form-actions"><button className="btn btn-primary" disabled={!movies.length || !screens.length}>Create show <ArrowRight size={15} /></button></div>
+          <p className="admin-form-description">
+            Schedule a movie screening and set its language, format, and
+            starting price.
+          </p>
+          <form
+            onSubmit={submitShow}
+            className="admin-form-grid admin-show-grid"
+          >
+            <label className="admin-field">
+              Movie
+              <select
+                required
+                value={showForm.movie}
+                onChange={(e) =>
+                  setShowForm({ ...showForm, movie: e.target.value })
+                }
+              >
+                <option value="">Select a movie</option>
+                {movies.map((m) => (
+                  <option key={m._id} value={m._id}>
+                    {m.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="admin-field">
+              Screen
+              <select
+                required
+                value={showForm.screen}
+                onChange={(e) =>
+                  setShowForm({ ...showForm, screen: e.target.value })
+                }
+              >
+                <option value="">Select a screen</option>
+                {screens.map((s) => (
+                  <option key={s._id} value={s._id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="admin-field">
+              Start date and time
+              <input
+                type="datetime-local"
+                required
+                value={showForm.startTime}
+                onChange={(e) =>
+                  setShowForm({ ...showForm, startTime: e.target.value })
+                }
+              />
+            </label>
+            <label className="admin-field">
+              Language
+              <input
+                placeholder="e.g. Hindi"
+                value={showForm.language}
+                onChange={(e) =>
+                  setShowForm({ ...showForm, language: e.target.value })
+                }
+              />
+            </label>
+            <label className="admin-field">
+              Format
+              <select
+                value={showForm.format}
+                onChange={(e) =>
+                  setShowForm({ ...showForm, format: e.target.value })
+                }
+              >
+                <option value="2D">2D</option>
+                <option value="3D">3D</option>
+                <option value="IMAX">IMAX</option>
+              </select>
+            </label>
+            <label className="admin-field">
+              Base ticket price (₹)
+              <input
+                type="number"
+                min="1"
+                required
+                value={showForm.basePrice}
+                onChange={(e) =>
+                  setShowForm({ ...showForm, basePrice: e.target.value })
+                }
+              />
+            </label>
+            <div className="admin-form-actions">
+              <button
+                className="btn btn-primary"
+                disabled={!movies.length || !screens.length}
+              >
+                Create show <ArrowRight size={15} />
+              </button>
+            </div>
           </form>
         </section>
       </div>
