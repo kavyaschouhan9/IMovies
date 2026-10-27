@@ -23,7 +23,7 @@ export function createApp() {
   ];
   app.use(
     cors({
-      origin: origins,
+      origin: ["https://i-movies-blush.vercel.app", "http://localhost:5173"],
       credentials: true,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization"],
